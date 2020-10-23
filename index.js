@@ -3,6 +3,7 @@
 const express = require('express');
 const fs = require('fs');
 const cors = require('cors');
+const onoff = require('onoff');
 
 const port = 5000;
 const tempSensorId = "28-ee6b781a64ff";
@@ -12,6 +13,14 @@ const tempLogFilePath = "./temperatureLogFile.json";
 const tempLoggingPeriodMs = 1000 * 60 * 10; // how long to wait between samplings of the temperature
 const maxTempLogAgeMs = 1000 * 60 * 60 * 24 * 7; // throw out any logged temperature older than this
 
+const mainPowerPin = new onoff.Gpio(17, 'out');
+const heatCoolSelectorPin = new onoff.Gpio(22, 'out');
+const furnaceActions = {
+    heat: "heat",
+    cool: "cool",
+    off: "off"
+};
+
 const globals = {
     furnaceState: {
         fan: false,
@@ -19,10 +28,18 @@ const globals = {
         cool: false
     },
     tempLog: undefined
-}
+};
 
 const app = express();
 app.use(cors()); // allow all origins access
+app.use(express.json()); // to receive json post requests
+
+
+function throwErrors(err) {
+    if (err) {
+        throw err;
+    }
+}
 
 
 function parseTempSensorData(data) {
@@ -66,6 +83,36 @@ app.get('/state', (req, res) => {
 });
 
 
+function performFurnaceAction(action) {
+    switch (action) {
+        case furnaceActions.heat:
+            globals.furnaceState = {fan: true, heat: true, cool: false};
+            mainPowerPin.write(0, throwErrors);
+            heatCoolSelectorPin.write(1, throwErrors);
+            break;
+        case furnaceActions.cool:
+            globals.furnaceState = {fan: true, heat: false, cool: true};
+            mainPowerPin.write(0, throwErrors);
+            heatCoolSelectorPin.write(0, throwErrors);
+            break;
+        case furnaceActions.off:
+            globals.furnaceState = {fan: false, heat: false, cool: false};
+            mainPowerPin.write(1, throwErrors);
+            break;
+    }
+}
+
+app.post('/state', (req, res) => {
+    const action = req.body.action;
+    if (action === undefined || furnaceActions[action] === undefined) {
+        res.send({error: "invalid action"});
+    } else {
+        performFurnaceAction(action);
+        res.send(globals.furnaceState);
+    }
+});
+
+
 app.get('/log', (req, res) => {
     res.send(globals.tempLog);
 });
@@ -93,9 +140,7 @@ function logTemperature() {
         
         // save log file
         const stringTempLog = JSON.stringify(globals.tempLog);
-        fs.writeFile(tempLogFilePath, stringTempLog, err => {
-            if (err) { throw err; }
-        });
+        fs.writeFile(tempLogFilePath, stringTempLog, throwErrors);
     });
 }
 
@@ -114,6 +159,7 @@ function startTempLogging(globals) {
 
 
 function main() {
+    performFurnaceAction(furnaceActions.off); // make sure furnace is initially off
     startTempLogging(globals);
     app.listen(port, () => {
         console.log('server listening for connections');
