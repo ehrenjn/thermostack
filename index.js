@@ -9,6 +9,9 @@ const port = 5000;
 const tempSensorId = "28-ee6b781a64ff";
 const tempSensorFilePath = `/sys/bus/w1/devices/${tempSensorId}/w1_slave`;
 
+const tempScheduleFilePath = "./temperatureSchedule.json";
+const furnaceUpdatePeriodMs = 1000 * 60 * 9; // minimum amount of time to wait between furnace updates
+
 const tempLogFilePath = "./temperatureLogFile.json";
 const tempLoggingPeriodMs = 1000 * 60 * 10; // how long to wait between samplings of the temperature
 const maxTempLogAgeMs = 1000 * 60 * 60 * 24 * 7; // throw out any logged temperature older than this
@@ -27,7 +30,8 @@ const globals = {
         heat: false,
         cool: false
     },
-    tempLog: undefined
+    tempLog: undefined,
+    tempSchedule: undefined
 };
 
 const app = express();
@@ -39,6 +43,11 @@ function throwErrors(err) {
     if (err) {
         throw err;
     }
+}
+
+
+function isNumber(value) {
+    return typeof(value) != "number" || isNaN(value);
 }
 
 
@@ -124,6 +133,28 @@ app.get('/kill', (req, res) => {
 });
 
 
+app.post('/schedule', (req, res) => {
+    let newTempTimeArray = undefined;
+    try {
+        newTempTimeArray = ObjToSortedTempTimeArray(req.body);
+    } catch (error) {
+        res.send(error);
+    }
+
+    if (newTempTimeArray !== undefined) {
+        const tempTimeObjString = JSON.stringify(req.body);
+        fs.writeFile(tempScheduleFilePath, tempTimeObjString, err => {
+            if (err) {
+                res.send(err);
+            } else {
+                globals.tempSchedule = newTempTimeArray;
+                res.send('success');
+            }
+        });
+    }
+});
+
+
 
 function logTemperature() {
     getTemperature(temperature => {
@@ -145,22 +176,105 @@ function logTemperature() {
 }
 
 
-function startTempLogging(globals) {
-    if (fs.existsSync(tempLogFilePath)) {
-        const data = fs.readFileSync(tempLogFilePath);
-        globals.tempLog = JSON.parse(data);
-    } else {
-        globals.tempLog = {};
+// represents a temperature at a specific time
+function TempTime(timeStr, tempArray) {
+
+    // times must be in format like 8:10 or 16:07
+    const timeStrRegex = /^(?<hour>\d{1,2}):(?<minutes>\d{2})$/;
+    if (timeStrRegex === null) throw `Improperly formed time string: "${timeStr}"`;
+
+    // tempArray must be in format like [19, 21] where the 2nd number is max temp and first is min
+    if (!Array.isArray(tempArray)) throw `tempArray must be an array, not: ${tempArray}`;
+    if (tempArray.length != 2) throw `tempArray must have length 2, you have length ${tempArray.length}`;
+    if (!isNumber(tempArray[0]) || !isNumber(tempArray[1])) throw `Invalid tempArray: ${temperature} (both values must be numbers)`;
+    if (tempArray[0] >= tempArray[1]) throw `Invalid tempArray: ${temperature} (min temperature must be less than max)`;
+
+    this.hour = timeStrRegex.groups.hour;
+    this.minutes = timeStrRegex.groups.minutes;
+    this.minTemp = tempArray[0];
+    this.maxTemp = tempArray[1];
+}
+
+
+function compareTempTimes(tempTime1, tempTime2) {
+    if (tempTime1.hour > tempTime2.hour) return 1;
+    if (tempTime1.hour < tempTime2.hour) return -1;
+    if (tempTime1.minutes > tempTime2.minutes) return 1;
+    if (tempTime1.minutes < tempTime2.minutes) return -1;
+    return 0;
+}
+
+function ObjToSortedTempTimeArray(obj) {
+    let array = [];
+    for (const [timeStr, tempArray] of Object.entries(obj)) {
+        array.push(new TempTime(timeStr, tempArray));
+    }
+    array.sort(compareTempTimes);
+    return array;
+}
+
+
+function updateFurnace() {
+    if (globals.tempSchedule === []) {
+        console.log("no tempSchedule, skipping furnace update");
+        return;
     }
 
+    const currentTime = new Date();
+    let correctTemp = globals.tempSchedule[globals.tempSchedule.length - 1]; // by default, the correct temperature is whatever temperature it should be at the end of the day
+    globals.tempSchedule.forEach(tempTime => {
+        tempTimeIsBeforeCurrentTime = tempTime.hour < currentTime.getHours() || 
+            (tempTime.hour == currentTime.getHours() && tempTime.minutes < currentTime.getMinutes());
+        if (tempTimeIsBeforeCurrentTime) {
+            correctTemp = tempTime.temperature;
+        }
+    });
+
+    getTemperature(temperature => {
+        if (isNumber(temperature)) {
+            if (temperature < correctTemp.minTemp) {
+                performFurnaceAction(furnaceActions.heat);
+            } else if (temperature > correctTemp.maxTemp) {
+                performFurnaceAction(furnaceActions.cool);
+            } else {
+                performFurnaceAction(furnaceActions.off);
+            }
+        } else {
+            console.log(`Tried to get temperature to update furnace but got error instead: ${temperature}`);
+        }
+    });
+}
+
+
+function readJsonFileIfExists(path) {
+    if (fs.existsSync(path)) {
+        const data = fs.readFileSync(path);
+        return JSON.parse(data);
+    } else {
+        return {};
+    }
+}
+
+
+function startTempLogging(globals) {
+    globals.tempLog = readJsonFileIfExists(tempLogFilePath);
     logTemperature(); // run once before looping
     setInterval(logTemperature, tempLoggingPeriodMs);
 }
 
 
+function startFurnaceUpdates(globals) {
+    globals.tempSchedule = ObjToSortedTempTimeArray(readJsonFileIfExists(tempScheduleFilePath));
+    updateFurnace(); // run once before looping
+    setInterval(updateFurnace, furnaceUpdatePeriodMs);
+}
+
+
+
 function main() {
     performFurnaceAction(furnaceActions.off); // make sure furnace is initially off
     startTempLogging(globals);
+    startFurnaceUpdates(globals);
     app.listen(port, () => {
         console.log('server listening for connections');
     });
