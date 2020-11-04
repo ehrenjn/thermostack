@@ -215,7 +215,7 @@ function ObjToSortedTempTimeArray(obj) {
 
 
 function updateFurnace() {
-    if (globals.tempSchedule === []) {
+    if (globals.tempSchedule.length == 0) {
         console.log("no tempSchedule, skipping furnace update");
         return;
     }
@@ -249,7 +249,12 @@ function updateFurnace() {
 function readJsonFileIfExists(path) {
     if (fs.existsSync(path)) {
         const data = fs.readFileSync(path);
-        return JSON.parse(data);
+        try {
+            return JSON.parse(data);
+        } catch (error) {
+            console.log(`${path} does not contain valid json, defaulting to {}`);
+            return {};
+        }
     } else {
         return {};
     }
