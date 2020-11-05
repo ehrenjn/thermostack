@@ -47,7 +47,7 @@ function throwErrors(err) {
 
 
 function isNumber(value) {
-    return typeof(value) != "number" || isNaN(value);
+    return typeof(value) == "number" && (! isNaN(value));
 }
 
 
@@ -61,6 +61,11 @@ function parseTempSensorData(data) {
     if (tempMatch === null) {
         return {
             error: "couldn't find temperature in data", 
+            data: data
+        };
+    } else if (tempMatch[1] == "0") { // assume a temp of 0 degrees is an error
+        return {
+            error: "read 0 degree temperature", 
             data: data
         };
     }
@@ -180,17 +185,20 @@ function logTemperature() {
 function TempTime(timeStr, tempArray) {
 
     // times must be in format like 8:10 or 16:07
-    const timeStrRegex = /^(?<hour>\d{1,2}):(?<minutes>\d{2})$/;
-    if (timeStrRegex === null) throw `Improperly formed time string: "${timeStr}"`;
+    const timeStrRegex = /^(\d{1,2}):(\d{2})$/;
+    const extractedTimes = timeStr.match(timeStrRegex);
+    if (extractedTimes === null) throw `Improperly formed time string: "${timeStr}"`;
+    if (extractedTimes[1] < 0 || extractedTimes[1] > 23) throw `Invalid timeStr: ${timeStr} (invalid hour)`;
+    if (extractedTimes[2] < 0 || extractedTimes[2] > 59) throw `Invalid timeStr: ${timeStr} (invalid minutes)`;
 
     // tempArray must be in format like [19, 21] where the 2nd number is max temp and first is min
-    if (!Array.isArray(tempArray)) throw `tempArray must be an array, not: ${tempArray}`;
-    if (tempArray.length != 2) throw `tempArray must have length 2, you have length ${tempArray.length}`;
-    if (!isNumber(tempArray[0]) || !isNumber(tempArray[1])) throw `Invalid tempArray: ${temperature} (both values must be numbers)`;
-    if (tempArray[0] >= tempArray[1]) throw `Invalid tempArray: ${temperature} (min temperature must be less than max)`;
+    if (!Array.isArray(tempArray)) throw `temperature array must be an array, not: ${tempArray}`;
+    if (tempArray.length != 2) throw `temperature array must have length 2, you have length ${tempArray.length}`;
+    if ((!isNumber(tempArray[0])) || (!isNumber(tempArray[1]))) throw `Invalid temperature array: ${tempArray} (both values must be numbers)`;
+    if (tempArray[0] >= tempArray[1]) throw `Invalid temperature array: ${tempArray} (min temperature must be less than max)`;
 
-    this.hour = timeStrRegex.groups.hour;
-    this.minutes = timeStrRegex.groups.minutes;
+    this.hour = parseFloat(extractedTimes[1]);
+    this.minutes = parseFloat(extractedTimes[2]);
     this.minTemp = tempArray[0];
     this.maxTemp = tempArray[1];
 }
@@ -223,10 +231,10 @@ function updateFurnace() {
     const currentTime = new Date();
     let correctTemp = globals.tempSchedule[globals.tempSchedule.length - 1]; // by default, the correct temperature is whatever temperature it should be at the end of the day
     globals.tempSchedule.forEach(tempTime => {
-        tempTimeIsBeforeCurrentTime = tempTime.hour < currentTime.getHours() || 
+        const tempTimeIsBeforeCurrentTime = tempTime.hour < currentTime.getHours() || 
             (tempTime.hour == currentTime.getHours() && tempTime.minutes < currentTime.getMinutes());
         if (tempTimeIsBeforeCurrentTime) {
-            correctTemp = tempTime.temperature;
+            correctTemp = tempTime;
         }
     });
 
@@ -240,7 +248,7 @@ function updateFurnace() {
                 performFurnaceAction(furnaceActions.off);
             }
         } else {
-            console.log(`Tried to get temperature to update furnace but got error instead: ${temperature}`);
+            console.log("Tried to get temperature to update furnace but got error instead: ", temperature); // not using ${} because it formats objects wrong
         }
     });
 }
