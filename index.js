@@ -54,17 +54,17 @@ function isNumber(value) {
 function parseTempSensorData(data) {
     const crcSuccess = /crc=.. YES/.test(data);
     if (!crcSuccess) {
-        return {error: "CRC failure"};
+        throw {error: "CRC failure"};
     }
 
     const tempMatch = data.match(/t=(\d+)/);
     if (tempMatch === null) {
-        return {
+        throw {
             error: "couldn't find temperature in data", 
             data: data
         };
     } else if (tempMatch[1] == "0") { // assume a temp of 0 degrees is an error
-        return {
+        throw {
             error: "read 0 degree temperature", 
             data: data
         };
@@ -74,26 +74,23 @@ function parseTempSensorData(data) {
 }
 
 
-function getTemperature(callback) {
-    fs.readFile(tempSensorFilePath, 'utf-8', (err, data) => {
-        if (err) {
-            callback(err);
-        } else {
-            callback(parseTempSensorData(data));
-        }
-    });
+function getTemperatureOrError() {
+    try {
+        const data = fs.readFileSync(tempSensorFilePath, 'utf-8'); // have to do this sync because if things try to read the sensor at the same time then it'll get bricked until the pi restarts or the sensor is removed from the circuit and popped back in. Better solutions would be using the rwlock package or writing my own lock but extra dependencies are gross and writing my own lock turned into a mess and it's a goddamn javascript thermostat so I'll leave it like this for now
+        return parseTempSensorData(data);
+    } catch (error) {
+        return error;
+    }
 }
 
 
 app.get('/state', (req, res) => {
     console.log("got request for state");
-    getTemperature(temperature => {
-        res.send({
-            furnace: globals.furnaceState, 
-            temperature: temperature
-        });
-        console.log("sent state");
+    res.send({
+        furnace: globals.furnaceState, 
+        temperature: getTemperatureOrError()
     });
+    console.log("sent state");
 });
 
 
@@ -162,22 +159,23 @@ app.post('/schedule', (req, res) => {
 
 
 function logTemperature() {
-    getTemperature(temperature => {
-        const currentTime = Date.now();
-        globals.tempLog[currentTime] = temperature;
+    const currentTime = Date.now();
+    globals.tempLog[currentTime] = {
+        furnace: globals.furnaceState, 
+        temperature: getTemperatureOrError()
+    };
 
-        // remove old temperatures
-        const oldestAllowedTime = currentTime - maxTempLogAgeMs;
-        for (const time of Object.keys(globals.tempLog)) {
-            if (time < oldestAllowedTime) {
-                delete globals.tempLog[time];
-            }
+    // remove old log entries
+    const oldestAllowedTime = currentTime - maxTempLogAgeMs;
+    for (const time of Object.keys(globals.tempLog)) {
+        if (time < oldestAllowedTime) {
+            delete globals.tempLog[time];
         }
-        
-        // save log file
-        const stringTempLog = JSON.stringify(globals.tempLog);
-        fs.writeFile(tempLogFilePath, stringTempLog, throwErrors);
-    });
+    }
+    
+    // save log file
+    const stringTempLog = JSON.stringify(globals.tempLog);
+    fs.writeFile(tempLogFilePath, stringTempLog, throwErrors);
 }
 
 
@@ -238,19 +236,18 @@ function updateFurnace() {
         }
     });
 
-    getTemperature(temperature => {
-        if (isNumber(temperature)) {
-            if (temperature < correctTemp.minTemp) {
-                performFurnaceAction(furnaceActions.heat);
-            } else if (temperature > correctTemp.maxTemp) {
-                performFurnaceAction(furnaceActions.cool);
-            } else {
-                performFurnaceAction(furnaceActions.off);
-            }
+    const temperature = getTemperatureOrError();
+    if (isNumber(temperature)) {
+        if (temperature < correctTemp.minTemp) {
+            performFurnaceAction(furnaceActions.heat);
+        } else if (temperature > correctTemp.maxTemp) {
+            performFurnaceAction(furnaceActions.cool);
         } else {
-            console.log("Tried to get temperature to update furnace but got error instead: ", temperature); // not using ${} because it formats objects wrong
+            performFurnaceAction(furnaceActions.off);
         }
-    });
+    } else {
+        console.log("Tried to get temperature to update furnace but got error instead: ", temperature); // not using ${} because it formats objects wrong
+    }
 }
 
 
