@@ -31,7 +31,8 @@ const globals = {
         cool: false
     },
     tempLog: undefined,
-    tempSchedule: undefined
+    tempSchedule: undefined,
+    tempScheduleJson: undefined
 };
 
 const app = express();
@@ -150,12 +151,17 @@ app.post('/schedule', (req, res) => {
                 res.send(err);
             } else {
                 globals.tempSchedule = newTempTimeArray;
+                globals.tempScheduleJson = req.body;
                 res.send('success');
             }
         });
     }
 });
 
+
+app.get('/schedule', (req, res) => {
+    res.send(globals.tempScheduleJson);
+});
 
 
 function logTemperature() {
@@ -274,7 +280,8 @@ function startTempLogging(globals) {
 
 
 function startFurnaceUpdates(globals) {
-    globals.tempSchedule = ObjToSortedTempTimeArray(readJsonFileIfExists(tempScheduleFilePath));
+    globals.tempScheduleJson = readJsonFileIfExists(tempScheduleFilePath);
+    globals.tempSchedule = ObjToSortedTempTimeArray(globals.tempScheduleJson);
     updateFurnace(); // run once before looping
     setInterval(updateFurnace, furnaceUpdatePeriodMs);
 }
